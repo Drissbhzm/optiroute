@@ -89,7 +89,7 @@ body{background:var(--navy);display:flex;justify-content:center;align-items:cent
 
 /* MAP PICKER */
 .map-picker-btn{width:100%;padding:12px;background:var(--green-light);border:1.5px solid var(--green);border-radius:13px;color:var(--green);font-size:14px;font-weight:600;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:8px;margin-bottom:10px;font-family:inherit}
-.map-picker-overlay{position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:9999;display:none;flex-direction:column}
+.map-picker-overlay{position:fixed;top:0;left:0;right:0;bottom:0;width:100%;height:100%;background:#fff;z-index:9999;display:none;flex-direction:column}
 .map-picker-overlay.active{display:flex}
 .map-picker-header{background:var(--navy);padding:16px 18px;display:flex;align-items:center;justify-content:space-between;flex-shrink:0}
 .map-picker-title{color:white;font-size:16px;font-weight:700}
@@ -181,7 +181,7 @@ body{background:var(--navy);display:flex;justify-content:center;align-items:cent
   </div>
   <div class="map-picker-tip">&#128205; Deplacez la carte pour positionner le marqueur</div>
   <div style="position:relative;flex:1">
-    <div id="map-picker-map"></div>
+    <div id="map-picker-map" style="width:100%;flex:1;min-height:300px;"></div>
     <div class="map-center-pin">&#128205;</div>
   </div>
   <button class="map-picker-confirm" id="map-picker-confirm" onclick="confirmMapPicker()">
