@@ -389,42 +389,7 @@ function initHomeMap() {
 function openMapPicker(target) {
   pickerTarget = target;
   pickerCoords = null;
-  var overlay = document.getElementById('map-picker-overlay');
-  overlay.classList.add('active');
-  document.getElementById('map-picker-title').textContent = target === 'depart' ? 'Choisir le point de depart' : 'Choisir la livraison';
-  
-  setTimeout(function() {
-    var mapDiv = document.getElementById('map-picker-map');
-    mapDiv.style.height = (window.innerHeight - 160) + 'px';
-    
-    if (pickerMap) {
-      pickerMap.invalidateSize(true);
-      return;
-    }
-    
-    var startLat = 33.5731, startLng = -7.5898;
-    pickerMap = L.map('map-picker-map', { 
-      zoomControl: true, 
-      attributionControl: false,
-      tap: false
-    });
-    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-      maxZoom: 19,
-      crossOrigin: true
-    }).addTo(pickerMap);
-    pickerMap.setView([startLat, startLng], 13);
-    
-    if (navigator.geolocation) {
-      navigator.geolocation.getCurrentPosition(function(pos) {
-        pickerMap.setView([pos.coords.latitude, pos.coords.longitude], 15);
-      });
-    }
-    
-    setTimeout(function() {
-      pickerMap.invalidateSize(true);
-    }, 300);
-  }, 200);
-}
+  document.getElementById('map-picker-overlay').classList.add('active');
   document.getElementById('map-picker-title').textContent = target === 'depart' ? 'Choisir le point de depart' : 'Choisir la livraison';
   document.getElementById('map-picker-confirm').disabled = false;
   setTimeout(function() {
