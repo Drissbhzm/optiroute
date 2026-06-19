@@ -256,7 +256,7 @@ body{background:var(--navy);display:flex;justify-content:center;align-items:cent
     <div class="or-row">ou saisir / coller un lien</div>
     <div class="input-wrap">
       <div class="iico"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg></div>
-      <input id="dep-inp" class="ifield" type="text" placeholder="Adresse ou lien Google Maps..." autocomplete="off">
+      <input id="dep-inp" class="ifield" type="text" placeholder="Adresse, coords ou lien Google Maps..." autocomplete="off">
       <div id="dep-list" class="ac-list"></div>
     </div>
     <input type="hidden" id="dep-coords">
@@ -422,37 +422,62 @@ function go(id) {
   else { document.getElementById('ad-banner').style.display = 'none'; }
 }
 
-// EXTRACT COORDS FROM GOOGLE MAPS LINKS
+// EXTRACT COORDS FROM GOOGLE MAPS LINKS - Professional version
 function extractCoordsFromText(text) {
   text = text.trim();
-  // Format: @lat,lng or q=lat,lng
-  var patterns = [
-    /@(-?\d+\.?\d*),(-?\d+\.?\d*)/,
-    /[?&]q=(-?\d+\.?\d*),(-?\d+\.?\d*)/,
-    /ll=(-?\d+\.?\d*),(-?\d+\.?\d*)/,
-    /!3d(-?\d+\.?\d*)!4d(-?\d+\.?\d*)/,
-    /place\/([^\/]+)\/@(-?\d+\.?\d*),(-?\d+\.?\d*)/
-  ];
-  for (var i = 0; i < patterns.length; i++) {
-    var m = text.match(patterns[i]);
-    if (m) {
-      var lat = parseFloat(m[m.length-2]);
-      var lng = parseFloat(m[m.length-1]);
-      if (lat >= -90 && lat <= 90 && lng >= -180 && lng <= 180) {
-        return { lat: lat, lng: lng };
-      }
-    }
+  
+  // 1. URL complète Google Maps: /place/Name/@lat,lng,zoom
+  var m1 = text.match(/@(-?[0-9]{1,3}\.[0-9]+),(-?[0-9]{1,3}\.[0-9]+)/);
+  if (m1) {
+    var lat = parseFloat(m1[1]), lng = parseFloat(m1[2]);
+    if (lat>=-90&&lat<=90&&lng>=-180&&lng<=180) return {lat:lat,lng:lng,found:true};
   }
-  // Format: bare coordinates "33.5731,-7.5898"
-  var coordMatch = text.match(/^(-?\d+\.?\d*)[,\s]+(-?\d+\.?\d*)$/);
-  if (coordMatch) {
-    var lat2 = parseFloat(coordMatch[1]);
-    var lng2 = parseFloat(coordMatch[2]);
-    if (lat2 >= -90 && lat2 <= 90 && lng2 >= -180 && lng2 <= 180) {
-      return { lat: lat2, lng: lng2 };
-    }
+  
+  // 2. !3d et !4d dans URLs Google Maps longues
+  var m2 = text.match(/!3d(-?[0-9]{1,3}\.[0-9]+)!4d(-?[0-9]{1,3}\.[0-9]+)/);
+  if (m2) {
+    var lat2 = parseFloat(m2[1]), lng2 = parseFloat(m2[2]);
+    if (lat2>=-90&&lat2<=90&&lng2>=-180&&lng2<=180) return {lat:lat2,lng:lng2,found:true};
   }
+  
+  // 3. ?q=lat,lng ou &q=lat,lng
+  var m3 = text.match(/[?&]q=(-?[0-9]{1,3}\.[0-9]+),(-?[0-9]{1,3}\.[0-9]+)/);
+  if (m3) {
+    var lat3 = parseFloat(m3[1]), lng3 = parseFloat(m3[2]);
+    if (lat3>=-90&&lat3<=90&&lng3>=-180&&lng3<=180) return {lat:lat3,lng:lng3,found:true};
+  }
+  
+  // 4. ll=lat,lng
+  var m4 = text.match(/ll=(-?[0-9]{1,3}\.[0-9]+),(-?[0-9]{1,3}\.[0-9]+)/);
+  if (m4) {
+    var lat4 = parseFloat(m4[1]), lng4 = parseFloat(m4[2]);
+    if (lat4>=-90&&lat4<=90&&lng4>=-180&&lng4<=180) return {lat:lat4,lng:lng4,found:true};
+  }
+  
+  // 5. Coordonnées directes: "33.5731,-7.5898" ou "33.5731 -7.5898"
+  var m5 = text.match(/^(-?[0-9]{1,3}\.[0-9]{3,})[,\s]+(-?[0-9]{1,3}\.[0-9]{3,})$/);
+  if (m5) {
+    var lat5 = parseFloat(m5[1]), lng5 = parseFloat(m5[2]);
+    if (lat5>=-90&&lat5<=90&&lng5>=-180&&lng5<=180) return {lat:lat5,lng:lng5,found:true};
+  }
+  
+  // 6. Lien court goo.gl ou maps.app.goo.gl -> afficher aide
+  if (text.includes('goo.gl') || text.includes('maps.app')) {
+    return {short_link: true};
+  }
+  
   return null;
+}
+
+function showLinkHelp(inputEl) {
+  var existing = inputEl.parentNode.querySelector('.link-help');
+  if (existing) return;
+  var help = document.createElement('div');
+  help.className = 'link-help';
+  help.style.cssText = 'background:#fff3cd;border:1px solid #ffc107;border-radius:8px;padding:10px 12px;margin-top:6px;font-size:12px;color:#856404;line-height:1.5';
+  help.innerHTML = '&#128073; <strong>Lien court detecte.</strong> Pour une meilleure precision :<br>1. Ouvre le lien dans ton navigateur<br>2. Copie l\'URL complete depuis la barre d\'adresse<br>3. Colle-la ici<br><em>L\'URL ressemble a : google.com/maps/place/.../@33.59,-7.68...</em>';
+  inputEl.parentNode.appendChild(help);
+  setTimeout(function() { if (help.parentNode) help.parentNode.removeChild(help); }, 8000);
 }
 
 window.addEventListener('load', function() {
@@ -466,10 +491,17 @@ window.addEventListener('load', function() {
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('/service-worker.js');
 
   document.getElementById('dep-inp').addEventListener('input', function() {
-    var coords = extractCoordsFromText(this.value);
-    if (coords) {
-      document.getElementById('dep-coords').value = coords.lat + ',' + coords.lng;
+    var existing = this.parentNode.querySelector('.link-help');
+    if (existing) existing.parentNode.removeChild(existing);
+    var result = extractCoordsFromText(this.value);
+    if (result && result.found) {
+      document.getElementById('dep-coords').value = result.lat + ',' + result.lng;
       this.style.borderColor = '#1A9E5C';
+      document.getElementById('dep-list').style.display = 'none';
+    } else if (result && result.short_link) {
+      document.getElementById('dep-coords').value = '';
+      this.style.borderColor = '#ffc107';
+      showLinkHelp(this);
     } else {
       document.getElementById('dep-coords').value = '';
       this.style.borderColor = '';
@@ -619,10 +651,17 @@ function addStop() {
   var acDiv = document.createElement('div'); acDiv.className = 'ac-list'; acDiv.id = 'sl-' + id;
   var hiddenCoords = document.createElement('input'); hiddenCoords.type = 'hidden'; hiddenCoords.id = 'sc-' + id + '-c';
   inp.addEventListener('input', function() {
-    var coords = extractCoordsFromText(this.value);
-    if (coords) {
-      document.getElementById('sc-' + id + '-c').value = coords.lat + ',' + coords.lng;
+    var existing = this.parentNode.querySelector('.link-help');
+    if (existing) existing.parentNode.removeChild(existing);
+    var result = extractCoordsFromText(this.value);
+    if (result && result.found) {
+      document.getElementById('sc-' + id + '-c').value = result.lat + ',' + result.lng;
       this.style.borderColor = '#1A9E5C';
+      document.getElementById('sl-' + id).style.display = 'none';
+    } else if (result && result.short_link) {
+      document.getElementById('sc-' + id + '-c').value = '';
+      this.style.borderColor = '#ffc107';
+      showLinkHelp(this);
     } else {
       document.getElementById('sc-' + id + '-c').value = '';
       this.style.borderColor = '';
@@ -682,8 +721,8 @@ async function startOpt() {
   var depPos;
   if (depC) { var p = depC.split(','); depPos = { lat: parseFloat(p[0]), lng: parseFloat(p[1]) }; }
   else {
-    var coords = extractCoordsFromText(dep);
-    if (coords) { depPos = coords; }
+    var coordResult = extractCoordsFromText(dep);
+    if (coordResult && coordResult.found) { depPos = {lat: coordResult.lat, lng: coordResult.lng}; }
     else { depPos = await geocode(dep); }
   }
   allStops.push({ label: dep, lat: depPos.lat, lng: depPos.lng, isStart: true });
@@ -695,7 +734,7 @@ async function startOpt() {
     if (cEl && cEl.value) { var q = cEl.value.split(','); pos = { lat: parseFloat(q[0]), lng: parseFloat(q[1]) }; }
     else {
       var c2 = extractCoordsFromText(inp.value.trim());
-      if (c2) { pos = c2; }
+      if (c2 && c2.found) { pos = {lat: c2.lat, lng: c2.lng}; }
       else { pos = await geocode(inp.value.trim()); }
     }
     allStops.push({ label: inp.value.trim(), lat: pos.lat, lng: pos.lng });
