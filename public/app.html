@@ -501,7 +501,7 @@ window.addEventListener('load', function() {
     } else if (result && result.short_link) {
       document.getElementById('dep-coords').value = '';
       this.style.borderColor = '#ffc107';
-      showLinkHelp(this);
+      resolveShortLink(this.value, this, 'dep-coords', null);
     } else {
       document.getElementById('dep-coords').value = '';
       this.style.borderColor = '';
@@ -575,6 +575,56 @@ function applyPickerResult(label, lat, lng) {
     if (cEl) cEl.value = lat + ',' + lng;
   }
   closeMapPicker();
+}
+
+// Resolve short Google Maps links via Vercel Function
+function resolveShortLink(url, inputEl, coordsId, listId) {
+  // Show loading state
+  inputEl.style.borderColor = '#ffc107';
+  var loadingDiv = document.createElement('div');
+  loadingDiv.className = 'link-help link-loading';
+  loadingDiv.style.cssText = 'background:#e8f7f0;border:1px solid #1A9E5C;border-radius:8px;padding:10px 12px;margin-top:6px;font-size:12px;color:#0D2B5E;display:flex;align-items:center;gap:8px';
+  loadingDiv.innerHTML = '<span style="animation:spin 1s linear infinite;display:inline-block">&#8635;</span> Resolution du lien en cours...';
+  var existing = inputEl.parentNode.querySelector('.link-help');
+  if (existing) existing.parentNode.removeChild(existing);
+  inputEl.parentNode.appendChild(loadingDiv);
+
+  // Call Vercel Function
+  fetch('/api/resolve?url=' + encodeURIComponent(url))
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      // Remove loading
+      var ld = inputEl.parentNode.querySelector('.link-help');
+      if (ld) ld.parentNode.removeChild(ld);
+
+      if (data.success && data.lat && data.lng) {
+        // Success!
+        inputEl.value = data.label || (data.lat + ', ' + data.lng);
+        document.getElementById(coordsId).value = data.lat + ',' + data.lng;
+        inputEl.style.borderColor = '#1A9E5C';
+        if (listId) document.getElementById(listId).style.display = 'none';
+
+        // Show success message
+        var successDiv = document.createElement('div');
+        successDiv.style.cssText = 'background:#e8f7f0;border:1px solid #1A9E5C;border-radius:8px;padding:8px 12px;margin-top:6px;font-size:12px;color:#0D2B5E';
+        successDiv.innerHTML = '&#10003; Position trouvee : ' + (data.label || '');
+        inputEl.parentNode.appendChild(successDiv);
+        setTimeout(function() { if (successDiv.parentNode) successDiv.parentNode.removeChild(successDiv); }, 3000);
+      } else {
+        // Failed
+        inputEl.style.borderColor = '#e74c3c';
+        var errDiv = document.createElement('div');
+        errDiv.style.cssText = 'background:#fee2e2;border:1px solid #e74c3c;border-radius:8px;padding:8px 12px;margin-top:6px;font-size:12px;color:#a32d2d';
+        errDiv.innerHTML = '&#9888; Impossible de resoudre ce lien. Essayez de copier l\'URL complete depuis la barre d\'adresse.';
+        inputEl.parentNode.appendChild(errDiv);
+        setTimeout(function() { if (errDiv.parentNode) errDiv.parentNode.removeChild(errDiv); }, 5000);
+      }
+    })
+    .catch(function() {
+      var ld = inputEl.parentNode.querySelector('.link-help');
+      if (ld) ld.parentNode.removeChild(ld);
+      inputEl.style.borderColor = '#e74c3c';
+    });
 }
 
 var acTimer = null;
@@ -661,7 +711,7 @@ function addStop() {
     } else if (result && result.short_link) {
       document.getElementById('sc-' + id + '-c').value = '';
       this.style.borderColor = '#ffc107';
-      showLinkHelp(this);
+      resolveShortLink(this.value, this, 'sc-' + id + '-c', 'sl-' + id);
     } else {
       document.getElementById('sc-' + id + '-c').value = '';
       this.style.borderColor = '';
