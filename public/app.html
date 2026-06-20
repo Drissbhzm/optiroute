@@ -213,7 +213,7 @@ html,body{height:100%;overflow:hidden;background:var(--navy)}
   box-shadow:var(--shadow);border:1.5px solid transparent;
   transition:border-color .2s;
 }
-.stop-card.has-coords{border-color:rgba(26,158,92,.25)}
+.stop-card.has-coords{border-color:rgba(26,158,92,.4);background:linear-gradient(to right,var(--card),rgba(232,247,240,.3))}
 .snum{width:24px;height:24px;background:var(--navy);color:white;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;flex-shrink:0}
 .sinp{flex:1;border:none;outline:none;font-size:13px;color:var(--t1);background:transparent;font-family:inherit;min-width:0}
 .sinp::placeholder{color:var(--t3)}
@@ -850,13 +850,24 @@ function setStopCoords(id, label, lat, lng) {
   var card = document.getElementById('sc-' + id);
   var status = document.getElementById('ss-' + id);
   var hint = document.getElementById('sh-' + id);
-  if (inp) inp.value = label;
+
+  // Clean label — don't show raw URL, show resolved address
+  var displayLabel = label;
+  if (label && (label.includes('goo.gl') || label.includes('maps.app') || label.includes('google.com/maps'))) {
+    displayLabel = lat.toFixed(5) + ', ' + lng.toFixed(5);
+  }
+
+  if (inp) inp.value = displayLabel;
   if (latEl) latEl.value = lat;
   if (lngEl) lngEl.value = lng;
   if (card) card.classList.add('has-coords');
   if (status) status.className = 's-status ok';
-  if (hint) { hint.className = 'field-hint success show'; hint.textContent = '&#10003; ' + label.split(',')[0]; }
-  if (document.getElementById('sac-' + id)) document.getElementById('sac-' + id).style.display = 'none';
+  if (hint) {
+    hint.className = 'field-hint success show';
+    hint.innerHTML = '&#10003; ' + displayLabel.split(',')[0];
+  }
+  var ac = document.getElementById('sac-' + id);
+  if (ac) ac.style.display = 'none';
 }
 
 /* ══════════════════════════════════════════
@@ -897,34 +908,35 @@ function handleFieldInput(fieldEl, acId, latId, lngId, hintId, stopId) {
   var val = fieldEl.value.trim();
   fieldEl.className = 'field';
   hideHint(hintId);
-
   if (!val) return;
 
   var coords = extractCoords(val);
 
+  // ── Coordonnées directes ou URL complète Google Maps ──
   if (coords && !coords.shortLink) {
-    // Direct coordinates found
-    var label = val;
     if (latId === 'dep-lat') {
-      setDepCoords(label, coords.lat, coords.lng);
+      setDepCoords(val, coords.lat, coords.lng);
     } else {
-      setStopCoords(stopId, label, coords.lat, coords.lng);
+      setStopCoords(stopId, val, coords.lat, coords.lng);
     }
     return;
   }
 
+  // ── Lien court Google Maps (goo.gl, maps.app.goo.gl) ──
   if (coords && coords.shortLink) {
-    // Short link — resolve via server
     fieldEl.className = 'field warning';
-    showHint(hintId, 'loading', '&#8635; Resolution du lien Google Maps...');
+    showHint(hintId, 'loading', '&#8635; Resolution du lien en cours...');
+
     resolveShortLink(val,
       function(label, lat, lng) {
+        // Mise à jour visuelle immédiate
         if (latId === 'dep-lat') {
           setDepCoords(label, lat, lng);
         } else {
           setStopCoords(stopId, label, lat, lng);
         }
-        hideHint(hintId);
+        // Cacher le hint après succès
+        setTimeout(function() { hideHint(hintId); }, 2000);
       },
       function(err) {
         fieldEl.className = 'field error';
@@ -934,15 +946,18 @@ function handleFieldInput(fieldEl, acId, latId, lngId, hintId, stopId) {
     return;
   }
 
-  // Autocomplete
+  // ── Autocomplétion texte ──
   if (val.length < 3) return;
   clearTimeout(acTimers[acId]);
   acTimers[acId] = setTimeout(function() {
-    fetch('https://api.openrouteservice.org/geocode/autocomplete?api_key=' + ORS + '&text=' + encodeURIComponent(val) + '&size=6', {
-      headers: { 'Accept': 'application/json' }
-    }).then(function(r) { return r.json(); })
+    fetch(
+      'https://api.openrouteservice.org/geocode/autocomplete?api_key=' + ORS +
+      '&text=' + encodeURIComponent(val) + '&size=6',
+      { headers: { 'Accept': 'application/json' } }
+    ).then(function(r) { return r.json(); })
     .then(function(data) {
       var list = document.getElementById(acId);
+      if (!list) return;
       list.innerHTML = '';
       if (!data.features || !data.features.length) { list.style.display = 'none'; return; }
       data.features.forEach(function(f) {
@@ -973,6 +988,12 @@ setTimeout(function() {
   if (df) {
     df.addEventListener('input', function() {
       handleFieldInput(this, 'dep-ac', 'dep-lat', 'dep-lng', 'dep-hint', null);
+    });
+    df.addEventListener('paste', function(e) {
+      var self = this;
+      setTimeout(function() {
+        handleFieldInput(self, 'dep-ac', 'dep-lat', 'dep-lng', 'dep-hint', null);
+      }, 50);
     });
   }
   // Close AC on outside click
@@ -1030,6 +1051,13 @@ function addStop() {
 
   inp.addEventListener('input', function() {
     handleFieldInput(this, 'sac-' + id, 'slat-' + id, 'slng-' + id, 'sh-' + id, id);
+  });
+  // Detect paste immediately (better UX for pasting links)
+  inp.addEventListener('paste', function(e) {
+    var self = this;
+    setTimeout(function() {
+      handleFieldInput(self, 'sac-' + id, 'slat-' + id, 'slng-' + id, 'sh-' + id, id);
+    }, 50);
   });
 
   wrap.appendChild(inp);
