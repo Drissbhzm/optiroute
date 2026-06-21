@@ -1414,61 +1414,95 @@ async function fallback2opt() {
 }
 
 /* ══════════════════════════════════════════
-   ROUTE CALCULATION — Real roads via ORS Directions
+   ROUTE CALCULATION — Segment by segment for real roads
+   Strategy: call ORS for each pair of consecutive stops
+   This avoids the "too many waypoints" error
 ══════════════════════════════════════════ */
 async function computeRoute() {
   routeGeo = null;
   totalDist = 0; totalTime = 0;
 
   var ordered = optOrder.map(function(i) { return allStops[i]; });
-  var coords = ordered.map(function(s) { return [s.lng, s.lat]; });
-  
-  // Need at least 2 points
-  if (coords.length < 2) return;
+  if (ordered.length < 2) return;
 
-  try {
-    // ORS Directions API — returns REAL road geometry
-    var r = await fetch('https://api.openrouteservice.org/v2/directions/driving-car/geojson', {
-      method: 'POST',
-      headers: { 
-        'Authorization': ORS, 
-        'Content-Type': 'application/json',
-        'Accept': 'application/json, application/geo+json'
-      },
-      body: JSON.stringify({ 
-        coordinates: coords,
-        instructions: false,
-        geometry: true
-      })
+  var allSegments = [];
+  var totalDistM = 0, totalDurS = 0;
+  var allFailed = false;
+
+  // Fetch route segment by segment (more reliable)
+  for (var i = 0; i < ordered.length - 1; i++) {
+    var from = ordered[i];
+    var to = ordered[i + 1];
+    try {
+      var r = await fetch('https://api.openrouteservice.org/v2/directions/driving-car/geojson', {
+        method: 'POST',
+        headers: {
+          'Authorization': ORS,
+          'Content-Type': 'application/json',
+          'Accept': 'application/json, application/geo+json'
+        },
+        body: JSON.stringify({
+          coordinates: [[from.lng, from.lat], [to.lng, to.lat]],
+          instructions: false
+        })
+      });
+
+      var d = await r.json();
+
+      if (d.features && d.features[0] && d.features[0].properties && d.features[0].properties.summary) {
+        var sum = d.features[0].properties.summary;
+        totalDistM += sum.distance;
+        totalDurS += sum.duration;
+
+        // Collect geometry coordinates
+        if (d.features[0].geometry && d.features[0].geometry.coordinates) {
+          allSegments.push(d.features[0].geometry.coordinates);
+        }
+        console.log('✅ Segment ' + i + ': ' + (sum.distance/1000).toFixed(1) + 'km');
+      } else {
+        throw new Error('No summary');
+      }
+    } catch(e) {
+      console.log('⚠️ Segment ' + i + ' failed: ' + e.message + ' - using haversine');
+      // Fallback for this segment
+      var segDist = haversine(from.lat, from.lng, to.lat, to.lng);
+      totalDistM += segDist * 1000;
+      totalDurS += (segDist / 30) * 3600;
+      // Add straight line segment
+      allSegments.push([[from.lng, from.lat], [to.lng, to.lat]]);
+      allFailed = true;
+    }
+  }
+
+  totalDist = (totalDistM / 1000).toFixed(1);
+  totalTime = Math.round(totalDurS / 60);
+
+  // Build combined GeoJSON from all segments
+  if (allSegments.length > 0) {
+    var combined = [];
+    allSegments.forEach(function(seg) {
+      seg.forEach(function(pt, idx) {
+        // Avoid duplicate points at segment boundaries
+        if (idx === 0 && combined.length > 0) return;
+        combined.push(pt);
+      });
     });
-    
-    var d = await r.json();
-    
-    if (d.features && d.features[0]) {
-      var feat = d.features[0];
-      if (feat.properties && feat.properties.summary) {
-        var sum = feat.properties.summary;
-        totalDist = (sum.distance / 1000).toFixed(1);
-        totalTime = Math.round(sum.duration / 60);
-      }
-      if (feat.geometry) {
-        routeGeo = d; // Real road geometry
-        console.log('✅ Real road route: ' + totalDist + 'km, ' + totalTime + 'min');
-        return;
-      }
-    }
-    throw new Error('No geometry in response');
-    
-  } catch(e) {
-    console.log('⚠️ ORS Directions failed:', e.message, '- using haversine fallback');
-    // Fallback: haversine straight lines
-    var km = 0;
-    for (var i = 0; i < ordered.length - 1; i++) {
-      km += haversine(ordered[i].lat, ordered[i].lng, ordered[i+1].lat, ordered[i+1].lng);
-    }
-    totalDist = km.toFixed(1);
-    totalTime = Math.round(km / 30 * 60);
-    routeGeo = null;
+
+    routeGeo = {
+      type: 'FeatureCollection',
+      features: [{
+        type: 'Feature',
+        geometry: {
+          type: 'LineString',
+          coordinates: combined
+        },
+        properties: {
+          isEstimated: allFailed,
+          summary: { distance: totalDistM, duration: totalDurS }
+        }
+      }]
+    };
+    console.log('✅ Total route: ' + totalDist + 'km, ' + totalTime + 'min, estimated: ' + allFailed);
   }
 }
 
@@ -1527,37 +1561,42 @@ function initResultMap() {
   var ordered = optOrder.map(function(i) { return allStops[i]; });
   var lls = ordered.map(function(s) { return [s.lat, s.lng]; });
 
-  // ── Draw REAL road route if available ──
+  // ── Draw route ──
   if (routeGeo && routeGeo.features && routeGeo.features[0] && routeGeo.features[0].geometry) {
-    // Real roads from ORS Directions
-    L.geoJSON(routeGeo, { 
-      style: { 
-        color: '#1A9E5C', 
-        weight: 5, 
-        opacity: .9,
-        lineJoin: 'round',
-        lineCap: 'round'
-      } 
-    }).addTo(resMap);
-    console.log('✅ Drawing real road route');
-  } else {
-    // Fallback: straight lines with dashes (clearly indicates estimation)
-    L.polyline(lls, { 
-      color: '#1A9E5C', 
-      weight: 4, 
-      dashArray: '10 6', 
-      opacity: .7 
-    }).addTo(resMap);
+    var isEstimated = routeGeo.features[0].properties && routeGeo.features[0].properties.isEstimated;
     
-    // Show notice that route is estimated
-    var notice = L.control({ position: 'bottomleft' });
-    notice.onAdd = function() {
-      var d = L.DomUtil.create('div');
-      d.style.cssText = 'background:rgba(245,158,11,.9);color:white;padding:4px 8px;border-radius:6px;font-size:11px;font-weight:600';
-      d.textContent = '⚠️ Trajet estime';
-      return d;
-    };
-    notice.addTo(resMap);
+    if (isEstimated) {
+      // Mixed: some segments real, some estimated - show dashes
+      L.geoJSON(routeGeo, {
+        style: {
+          color: '#1A9E5C',
+          weight: 4,
+          opacity: .75,
+          dashArray: '10 5',
+          lineJoin: 'round',
+          lineCap: 'round'
+        }
+      }).addTo(resMap);
+    } else {
+      // All real roads - solid line
+      L.geoJSON(routeGeo, {
+        style: {
+          color: '#1A9E5C',
+          weight: 5,
+          opacity: .9,
+          lineJoin: 'round',
+          lineCap: 'round'
+        }
+      }).addTo(resMap);
+    }
+  } else {
+    // Complete fallback: straight dashed lines
+    L.polyline(lls, {
+      color: '#1A9E5C',
+      weight: 4,
+      dashArray: '10 6',
+      opacity: .7
+    }).addTo(resMap);
   }
 
   // ── Markers with popup ──
