@@ -1414,9 +1414,9 @@ async function fallback2opt() {
 }
 
 /* ══════════════════════════════════════════
-   ROUTE CALCULATION — Segment by segment for real roads
-   Strategy: call ORS for each pair of consecutive stops
-   This avoids the "too many waypoints" error
+   ROUTE CALCULATION — Segment by segment
+   Each segment = one API call = real roads guaranteed
+   Retry with OSRM public API if ORS fails
 ══════════════════════════════════════════ */
 async function computeRoute() {
   routeGeo = null;
@@ -1425,16 +1425,61 @@ async function computeRoute() {
   var ordered = optOrder.map(function(i) { return allStops[i]; });
   if (ordered.length < 2) return;
 
-  var allSegments = [];
-  var totalDistM = 0, totalDurS = 0;
-  var allFailed = false;
+  var allCoords = [];   // all geometry points combined
+  var totalDistM = 0;
+  var totalDurS = 0;
+  var anyFailed = false;
 
-  // Fetch route segment by segment (more reliable)
   for (var i = 0; i < ordered.length - 1; i++) {
     var from = ordered[i];
-    var to = ordered[i + 1];
-    try {
-      var r = await fetch('https://api.openrouteservice.org/v2/directions/driving-car/geojson', {
+    var to   = ordered[i + 1];
+    var segResult = await fetchSegment(from, to);
+
+    totalDistM += segResult.distM;
+    totalDurS  += segResult.durS;
+    anyFailed   = anyFailed || segResult.estimated;
+
+    // Merge coordinates (skip first point after first segment to avoid duplicates)
+    if (i === 0) {
+      allCoords = allCoords.concat(segResult.coords);
+    } else {
+      allCoords = allCoords.concat(segResult.coords.slice(1));
+    }
+
+    console.log(
+      (segResult.estimated ? '⚠️' : '✅') +
+      ' Segment ' + i + ': ' +
+      (segResult.distM / 1000).toFixed(1) + 'km'
+    );
+  }
+
+  totalDist = (totalDistM / 1000).toFixed(1);
+  totalTime = Math.round(totalDurS / 60);
+
+  if (allCoords.length >= 2) {
+    routeGeo = {
+      type: 'FeatureCollection',
+      features: [{
+        type: 'Feature',
+        geometry: { type: 'LineString', coordinates: allCoords },
+        properties: { estimated: anyFailed }
+      }]
+    };
+  }
+
+  console.log('Route total: ' + totalDist + 'km ' + totalTime + 'min estimated:' + anyFailed);
+}
+
+/* ── Fetch one segment: ORS first, OSRM as backup, haversine last ── */
+async function fetchSegment(from, to) {
+  var fromCoord = [from.lng, from.lat];
+  var toCoord   = [to.lng,   to.lat];
+
+  // ── 1st try: ORS Directions ──
+  try {
+    var r = await fetch(
+      'https://api.openrouteservice.org/v2/directions/driving-car/geojson',
+      {
         method: 'POST',
         headers: {
           'Authorization': ORS,
@@ -1442,68 +1487,87 @@ async function computeRoute() {
           'Accept': 'application/json, application/geo+json'
         },
         body: JSON.stringify({
-          coordinates: [[from.lng, from.lat], [to.lng, to.lat]],
+          coordinates: [fromCoord, toCoord],
           instructions: false
         })
-      });
-
-      var d = await r.json();
-
-      if (d.features && d.features[0] && d.features[0].properties && d.features[0].properties.summary) {
-        var sum = d.features[0].properties.summary;
-        totalDistM += sum.distance;
-        totalDurS += sum.duration;
-
-        // Collect geometry coordinates
-        if (d.features[0].geometry && d.features[0].geometry.coordinates) {
-          allSegments.push(d.features[0].geometry.coordinates);
-        }
-        console.log('✅ Segment ' + i + ': ' + (sum.distance/1000).toFixed(1) + 'km');
-      } else {
-        throw new Error('No summary');
       }
-    } catch(e) {
-      console.log('⚠️ Segment ' + i + ' failed: ' + e.message + ' - using haversine');
-      // Fallback for this segment
-      var segDist = haversine(from.lat, from.lng, to.lat, to.lng);
-      totalDistM += segDist * 1000;
-      totalDurS += (segDist / 30) * 3600;
-      // Add straight line segment
-      allSegments.push([[from.lng, from.lat], [to.lng, to.lat]]);
-      allFailed = true;
+    );
+    if (r.ok) {
+      var d = await r.json();
+      if (d.features && d.features[0] &&
+          d.features[0].properties && d.features[0].properties.summary &&
+          d.features[0].geometry && d.features[0].geometry.coordinates &&
+          d.features[0].geometry.coordinates.length > 1) {
+        var sum = d.features[0].properties.summary;
+        return {
+          distM: sum.distance,
+          durS:  sum.duration,
+          coords: d.features[0].geometry.coordinates,
+          estimated: false
+        };
+      }
     }
-  }
+  } catch(e) { /* try next */ }
 
-  totalDist = (totalDistM / 1000).toFixed(1);
-  totalTime = Math.round(totalDurS / 60);
+  // ── 2nd try: OSRM public API (free, no key needed) ──
+  try {
+    var osrmUrl =
+      'https://router.project-osrm.org/route/v1/driving/' +
+      from.lng + ',' + from.lat + ';' +
+      to.lng   + ',' + to.lat +
+      '?overview=full&geometries=geojson';
 
-  // Build combined GeoJSON from all segments
-  if (allSegments.length > 0) {
-    var combined = [];
-    allSegments.forEach(function(seg) {
-      seg.forEach(function(pt, idx) {
-        // Avoid duplicate points at segment boundaries
-        if (idx === 0 && combined.length > 0) return;
-        combined.push(pt);
-      });
-    });
+    var r2 = await fetch(osrmUrl);
+    if (r2.ok) {
+      var d2 = await r2.json();
+      if (d2.routes && d2.routes[0] &&
+          d2.routes[0].geometry && d2.routes[0].geometry.coordinates &&
+          d2.routes[0].geometry.coordinates.length > 1) {
+        var leg = d2.routes[0];
+        return {
+          distM: leg.distance,
+          durS:  leg.duration,
+          coords: leg.geometry.coordinates,
+          estimated: false
+        };
+      }
+    }
+  } catch(e) { /* try next */ }
 
-    routeGeo = {
-      type: 'FeatureCollection',
-      features: [{
-        type: 'Feature',
-        geometry: {
-          type: 'LineString',
-          coordinates: combined
-        },
-        properties: {
-          isEstimated: allFailed,
-          summary: { distance: totalDistM, duration: totalDurS }
-        }
-      }]
-    };
-    console.log('✅ Total route: ' + totalDist + 'km, ' + totalTime + 'min, estimated: ' + allFailed);
-  }
+  // ── 3rd try: GraphHopper public API (free, no key needed) ──
+  try {
+    var ghUrl =
+      'https://graphhopper.com/api/1/route?point=' +
+      from.lat + ',' + from.lng +
+      '&point=' + to.lat + ',' + to.lng +
+      '&vehicle=car&locale=fr&points_encoded=false' +
+      '&key=LijBPDQGfu7Iiq80ebFCtWMuznIa8bVwdHpyZfcl';
+
+    var r3 = await fetch(ghUrl);
+    if (r3.ok) {
+      var d3 = await r3.json();
+      if (d3.paths && d3.paths[0] &&
+          d3.paths[0].points && d3.paths[0].points.coordinates &&
+          d3.paths[0].points.coordinates.length > 1) {
+        var p = d3.paths[0];
+        return {
+          distM: p.distance,
+          durS:  p.time / 1000,
+          coords: p.points.coordinates,
+          estimated: false
+        };
+      }
+    }
+  } catch(e) { /* all failed */ }
+
+  // ── Final fallback: haversine straight line ──
+  var dist = haversine(from.lat, from.lng, to.lat, to.lng);
+  return {
+    distM: dist * 1000,
+    durS:  (dist / 30) * 3600,
+    coords: [fromCoord, toCoord],
+    estimated: true
+  };
 }
 
 /* ══════════════════════════════════════════
@@ -1563,32 +1627,17 @@ function initResultMap() {
 
   // ── Draw route ──
   if (routeGeo && routeGeo.features && routeGeo.features[0] && routeGeo.features[0].geometry) {
-    var isEstimated = routeGeo.features[0].properties && routeGeo.features[0].properties.isEstimated;
-    
-    if (isEstimated) {
-      // Mixed: some segments real, some estimated - show dashes
-      L.geoJSON(routeGeo, {
-        style: {
-          color: '#1A9E5C',
-          weight: 4,
-          opacity: .75,
-          dashArray: '10 5',
-          lineJoin: 'round',
-          lineCap: 'round'
-        }
-      }).addTo(resMap);
-    } else {
-      // All real roads - solid line
-      L.geoJSON(routeGeo, {
-        style: {
-          color: '#1A9E5C',
-          weight: 5,
-          opacity: .9,
-          lineJoin: 'round',
-          lineCap: 'round'
-        }
-      }).addTo(resMap);
-    }
+    var isEstimated = routeGeo.features[0].properties && routeGeo.features[0].properties.estimated;
+    L.geoJSON(routeGeo, {
+      style: {
+        color: '#1A9E5C',
+        weight: isEstimated ? 3 : 5,
+        opacity: isEstimated ? 0.65 : 0.92,
+        dashArray: isEstimated ? '8 5' : null,
+        lineJoin: 'round',
+        lineCap: 'round'
+      }
+    }).addTo(resMap);
   } else {
     // Complete fallback: straight dashed lines
     L.polyline(lls, {
